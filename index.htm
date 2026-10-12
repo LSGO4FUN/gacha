@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>寶可夢抽卡隨機生成器 - 備份升級版</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: 圓體與像素風字體 -->
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@500;800&family=Press+Start+2P&display=swap" rel="stylesheet">
+    <!-- FontAwesome -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
+    <style>
+        :root {
+            --poke-red: #EE1515;
+            --poke-yellow: #FFCB05;
+            --poke-blue: #3B4CCA;
+            --poke-dark: #222224;
+            --bg-color: #f0f0f0;
+        }
+
+        body {
+            font-family: 'M PLUS Rounded 1c', sans-serif;
+            background-color: var(--bg-color);
+            background-image: radial-gradient(#d1d5db 1px, transparent 1px);
+            background-size: 20px 20px;
+            color: #333;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .font-pixel { font-family: 'Press Start 2P', cursive; }
+
+        /* 寶可夢風格按鈕 */
+        .poke-btn {
+            background-color: var(--poke-red);
+            color: white;
+            border: 4px solid var(--poke-dark);
+            border-radius: 9999px;
+            box-shadow: 0 4px 0 var(--poke-dark), inset 0 -4px 0 rgba(0,0,0,0.2);
+            transition: all 0.1s;
+            text-shadow: 1px 1px 0 #000;
+        }
+        .poke-btn:active {
+            transform: translateY(4px);
+            box-shadow: 0 0px 0 var(--poke-dark), inset 0 -4px 0 rgba(0,0,0,0.2);
+        }
+        .poke-btn-yellow {
+            background-color: var(--poke-yellow);
+            color: var(--poke-dark);
+            text-shadow: none;
+        }
+        .poke-btn-blue {
+            background-color: var(--poke-blue);
+        }
+        .poke-btn-disabled {
+            background-color: #9ca3af !important;
+            color: #4b5563 !important;
+            pointer-events: none;
+            text-shadow: none;
+        }
+
+        /* 卡片面板風格 */
+        .poke-card-bg {
+            background: white;
+            border: 4px solid var(--poke-dark);
+            border-radius: 16px;
+            box-shadow: 4px 4px 0 var(--poke-dark);
+        }
+
+        /* 頁籤 */
+        .tab-btn {
+            opacity: 0.5;
+            transition: opacity 0.3s, transform 0.3s;
+            border-bottom: 4px solid transparent;
+        }
+        .tab-btn.active {
+            opacity: 1;
+            border-bottom: 4px solid var(--poke-red);
+            transform: translateY(-2px);
+            font-weight: 800;
+        }
+
+        /* 抽卡動畫 */
+        @keyframes pokeballShake {
+            0% { transform: rotate(0deg); }
+            20% { transform: rotate(15deg); }
+            40% { transform: rotate(-15deg); }
+            60% { transform: rotate(10deg); }
+            80% { transform: rotate(-10deg); }
+            100% { transform: rotate(0deg); }
+        }
+        .anim-shake { animation: pokeballShake 0.5s infinite; }
+
+        @keyframes popIn {
+            0% { opacity: 0; transform: scale(0.5) translateY(20px); }
+            100% { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .card-reveal {
+            animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+
+        .modal-overlay {
+            background-color: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <!-- 頂部 Header -->
+    <header class="bg-white border-b-4 border-gray-800 p-4 sticky top-0 z-40 shadow-md">
+        <div class="max-w-md mx-auto flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <div class="w-8 h-8 rounded-full border-4 border-gray-800 bg-red-500 relative overflow-hidden">
+                    <div class="absolute bottom-0 w-full h-1/2 bg-white border-t-2 border-gray-800"></div>
+                    <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-gray-800 bg-white"></div>
+                </div>
+                <h1 class="text-xl font-extrabold tracking-wider font-pixel text-sm mt-1">GachaGen</h1>
+            </div>
+            <select id="theme-selector" onchange="changeActiveTheme(this.value)" class="text-sm bg-gray-100 px-2 py-1 rounded border-2 border-gray-800 font-bold max-w-[150px] truncate outline-none">
+                <option value="">請選擇主題...</option>
+            </select>
+        </div>
+    </header>
+
+    <!-- 導覽列 -->
+    <nav class="bg-white border-b-2 border-gray-300 shadow-sm sticky top-[68px] z-30">
+        <div class="max-w-md mx-auto flex justify-around p-2">
+            <button class="tab-btn active p-2 flex-1 text-center font-bold text-gray-700" onclick="switchTab('draw')">
+                <i class="fa-solid fa-star text-lg block mb-1 text-yellow-500"></i> 抽卡
+            </button>
+            <button class="tab-btn p-2 flex-1 text-center font-bold text-gray-700" onclick="switchTab('inventory')">
+                <i class="fa-solid fa-box-open text-lg block mb-1 text-blue-500"></i> 包包
+            </button>
+            <button class="tab-btn p-2 flex-1 text-center font-bold text-gray-700" onclick="switchTab('themes')">
+                <i class="fa-solid fa-gear text-lg block mb-1 text-gray-500"></i> 設定
+            </button>
+        </div>
+    </nav>
+
+    <!-- 主要內容區 -->
+    <main class="flex-1 w-full max-w-md mx-auto p-4 pb-20 relative">
+        
+        <!-- ==================== 抽卡區 ==================== -->
+        <section id="tab-draw" class="tab-content block">
+            <div id="no-theme-msg" class="poke-card-bg p-6 text-center mt-10">
+                <i class="fa-solid fa-circle-exclamation text-4xl text-yellow-500 mb-4"></i>
+                <p class="font-bold text-lg">尚未選擇或建立主題！</p>
+                <button onclick="switchTab('themes')" class="poke-btn px-6 py-2 mt-4 font-bold">前往設定</button>
+            </div>
+
+            <div id="draw-interface" class="hidden flex-col items-center">
+                <!-- 剩餘卡牌資訊 -->
+                <div class="poke-card-bg w-full p-4 mb-6 flex items-center justify-between">
+                    <div>
+                        <h2 id="draw-theme-title" class="font-extrabold text-xl">主題名稱</h2>
+                        <p class="text-sm font-bold text-gray-600">指派給: <span id="draw-theme-assignee">某人</span></p>
+                    </div>
+                    <div class="text-right">
+                        <p class="text-xs text-gray-500 font-bold mb-1">剩餘卡牌</p>
+                        <span id="draw-theme-remain" class="text-3xl font-pixel text-blue-600">0</span>
+                    </div>
+                </div>
+
+                <!-- 抽卡控制旋鈕與按鈕 -->
+                <div id="draw-controls" class="w-full flex flex-col items-center mt-2">
+                    <label class="block font-bold mb-4 text-lg">決定抽卡數量</label>
+                    <div class="flex items-center w-full gap-3 px-2">
+                        <button onclick="adjustDrawCount(-1)" class="w-10 h-10 rounded-full bg-gray-200 border-2 border-gray-800 font-bold text-xl active:bg-gray-300">-</button>
+                        <input type="range" id="draw-slider" min="1" max="10" value="1" class="flex-1 accent-red-500 h-2 bg-gray-300 rounded-lg appearance-none cursor-pointer">
+                        <button onclick="adjustDrawCount(1)" class="w-10 h-10 rounded-full bg-gray-200 border-2 border-gray-800 font-bold text-xl active:bg-gray-300">+</button>
+                    </div>
+                    <div class="flex justify-between w-full px-12 mt-1 text-xs text-gray-500 font-pixel">
+                        <span>1</span>
+                        <span id="draw-slider-max">10</span>
+                    </div>
+
+                    <div class="mt-4 text-2xl font-bold bg-white border-4 border-gray-800 rounded-lg px-6 py-2 shadow-md">
+                        <span id="draw-count-display" class="font-pixel text-red-500 text-3xl">1</span> 張
+                    </div>
+
+                    <button onclick="startDraw()" class="poke-btn w-40 h-40 rounded-full flex flex-col items-center justify-center mt-8 relative overflow-hidden shadow-xl active:scale-95 transition-transform">
+                        <div class="absolute inset-0 bg-red-500 rounded-t-full border-b-8 border-gray-900 h-1/2"></div>
+                        <div class="absolute inset-0 top-1/2 bg-white rounded-b-full h-1/2"></div>
+                        <div class="relative z-10 w-12 h-12 bg-white border-8 border-gray-900 rounded-full flex items-center justify-center">
+                            <div class="w-4 h-4 bg-gray-300 rounded-full border-2 border-gray-900"></div>
+                        </div>
+                        <span class="relative z-10 mt-4 font-extrabold text-xl text-gray-900 font-pixel drop-shadow-md">抽卡!</span>
+                    </button>
+                </div>
+
+                <!-- 抽卡動畫等待區 -->
+                <div id="draw-animation-area" class="w-full hidden flex-col items-center justify-center mt-12">
+                    <div class="w-32 h-32 rounded-full relative border-8 border-gray-900 overflow-hidden mb-6 shadow-2xl anim-shake">
+                         <div class="absolute inset-0 bg-red-500 rounded-t-full border-b-4 border-gray-900 h-1/2"></div>
+                         <div class="absolute inset-0 top-1/2 bg-white rounded-b-full h-1/2"></div>
+                         <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white border-4 border-gray-900 rounded-full"></div>
+                    </div>
+                    <p class="font-bold text-xl animate-pulse font-pixel">Drawing...</p>
+                </div>
+
+                <!-- 抽卡結果與確認區 -->
+                <div id="draw-result-area" class="w-full hidden flex-col items-center mt-4">
+                    <h3 class="font-extrabold text-2xl mb-4 text-center">獲得卡牌！</h3>
+                    <div id="result-cards-container" class="flex flex-wrap justify-center gap-3 mb-6 min-h-[120px]"></div>
+
+                    <div id="draw-actions" class="flex gap-4 w-full px-2 hidden opacity-0 transition-opacity duration-500">
+                        <button onclick="handleRedraw()" id="btn-redraw" class="poke-btn poke-btn-yellow flex-1 py-3 font-bold text-lg">
+                            <i class="fa-solid fa-rotate-right"></i> 重抽 (<span id="redraw-count">2</span>)
+                        </button>
+                        <button onclick="confirmDraw()" class="poke-btn flex-1 py-3 font-bold text-lg">
+                            <i class="fa-solid fa-check"></i> 確認
+                        </button>
+                    </div>
+                    <p id="redraw-warning" class="text-red-500 text-sm font-bold mt-3 hidden text-center bg-red-100 p-2 rounded border border-red-300">
+                        <i class="fa-solid fa-triangle-exclamation"></i> 最後一次重抽機會！下次抽完將直接進入確認畫面。
+                    </p>
+                </div>
+
+                <!-- 照片上傳區 -->
+                <div id="photo-upload-area" class="w-full hidden flex-col mt-4">
+                    <div class="bg-yellow-100 border-l-4 border-yellow-500 p-3 mb-4 rounded-r">
+                        <h3 class="font-extrabold text-lg flex items-center gap-2">
+                            <i class="fa-solid fa-camera text-yellow-600"></i> 紀錄卡牌影像
+                        </h3>
+                        <p class="text-sm text-gray-700 mt-1 font-bold">請依序為抽到的 <span id="upload-count-display" class="text-red-500">0</span> 張卡牌拍照。號碼將不被保留，僅紀錄順序與照片。</p>
+                    </div>
+                    
+                    <div id="upload-slots-container" class="space-y-3 mb-6"></div>
+                    <button onclick="finishUploads()" class="poke-btn poke-btn-blue w-full py-4 font-bold text-lg shadow-lg">
+                        <i class="fa-solid fa-suitcase"></i> 完成，放入包包
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ==================== 包包 (紀錄區) ==================== -->
+        <section id="tab-inventory" class="tab-content hidden">
+            <div id="inv-no-theme" class="poke-card-bg p-6 text-center mt-10 hidden">
+                 <p class="font-bold">請先選擇主題以查看包包</p>
+            </div>
+
+            <div id="inv-content" class="hidden">
+                <div class="poke-card-bg p-4 mb-4 flex justify-between items-center">
+                    <div>
+                        <h2 id="inv-theme-name" class="font-extrabold text-lg">主題名稱</h2>
+                        <p class="text-xs font-bold text-gray-500">已蒐集卡牌數</p>
+                    </div>
+                    <div class="text-right">
+                         <div class="text-2xl font-extrabold text-blue-600 font-pixel">
+                            <span id="inv-collected">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-gray-200 border-4 border-gray-800 rounded-xl p-3 min-h-[300px]">
+                    <div id="gallery-container" class="grid grid-cols-3 gap-2">
+                        <!-- 圖片動態插入 -->
+                    </div>
+                    <div id="empty-gallery-msg" class="text-center text-gray-500 py-10 font-bold hidden">
+                        <i class="fa-solid fa-box-open text-4xl mb-2 opacity-50 block"></i>
+                        包包空空的
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ==================== 設定 (維護清單) ==================== -->
+        <section id="tab-themes" class="tab-content hidden">
+            <div class="flex gap-2 mb-6">
+                <button onclick="showAddThemeModal()" class="poke-btn flex-1 py-3 font-bold text-lg shadow-md flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-plus-circle"></i> 新增主題
+                </button>
+                <button onclick="document.getElementById('import-file').click()" class="poke-btn poke-btn-yellow flex-1 py-3 font-bold text-lg shadow-md flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-file-import"></i> 匯入備份
+                </button>
+                <input type="file" id="import-file" accept=".json" class="hidden" onchange="importThemeData(event)">
+            </div>
+
+            <h2 class="font-extrabold text-lg mb-4 pl-2 border-l-4 border-red-500">主題列表</h2>
+            <div id="themes-list" class="space-y-4"></div>
+            
+            <!-- 容量指示器 -->
+            <div class="mt-8 p-4 bg-gray-200 rounded-lg border-2 border-gray-400">
+                <div class="flex justify-between text-xs font-bold text-gray-600 mb-1">
+                    <span>LocalStorage 容量使用率 (支援~500張)</span>
+                    <span id="storage-usage-text">0%</span>
+                </div>
+                <div class="w-full bg-white rounded-full h-2 border border-gray-400 overflow-hidden">
+                    <div id="storage-progress" class="bg-green-500 h-2 rounded-full transition-all" style="width: 0%"></div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ==================== Modals ==================== -->
+
+    <!-- 新增主題 Modal -->
+    <div id="add-theme-modal" class="fixed inset-0 modal-overlay z-50 hidden flex items-center justify-center p-4">
+        <div class="poke-card-bg w-full max-w-sm p-6 relative">
+            <button onclick="closeAddThemeModal()" class="absolute top-2 right-2 w-8 h-8 bg-gray-200 rounded-full border-2 border-gray-800 font-bold hover:bg-gray-300">X</button>
+            <h2 class="font-extrabold text-xl mb-4 text-center text-red-600 border-b-2 border-gray-200 pb-2">新增主題</h2>
+            <form id="add-theme-form" onsubmit="handleThemeSubmit(event)" class="space-y-4">
+                <div>
+                    <label class="block font-bold text-sm mb-1 text-gray-700">主題名稱 *</label>
+                    <input type="text" id="input-theme-name" required class="w-full border-2 border-gray-800 rounded p-2 focus:ring-2 focus:ring-red-400 outline-none">
+                </div>
+                <div>
+                    <label class="block font-bold text-sm mb-1 text-gray-700">指派給 *</label>
+                    <input type="text" id="input-theme-assignee" required class="w-full border-2 border-gray-800 rounded p-2 focus:ring-2 focus:ring-red-400 outline-none">
+                </div>
+                <div>
+                    <label class="block font-bold text-sm mb-1 text-gray-700">卡牌總數 * (正整數)</label>
+                    <input type="number" id="input-theme-total" required min="1" class="w-full border-2 border-gray-800 rounded p-2 font-pixel focus:ring-2 focus:ring-red-400 outline-none">
+                </div>
+                <div>
+                    <label class="block font-bold text-sm mb-1 text-gray-700">主題圖片 (選填)</label>
+                    <div class="flex items-center gap-3">
+                        <input type="file" id="input-theme-image" accept="image/*" class="hidden" onchange="previewThemeImage(event)">
+                        <button type="button" onclick="document.getElementById('input-theme-image').click()" class="bg-gray-200 border-2 border-gray-800 font-bold py-2 px-4 rounded hover:bg-gray-300 text-sm">
+                            <i class="fa-solid fa-image"></i> 選擇圖片
+                        </button>
+                        <img id="preview-theme-img" src="" class="w-12 h-12 rounded border-2 border-gray-400 hidden object-cover">
+                    </div>
+                </div>
+                <button type="submit" class="poke-btn w-full py-3 mt-2 font-bold text-lg">建立主題</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- 刪除確認 Modal -->
+    <div id="delete-modal" class="fixed inset-0 modal-overlay z-50 hidden flex items-center justify-center p-4">
+        <div class="poke-card-bg w-full max-w-sm p-6 relative border-red-500">
+            <h2 class="font-extrabold text-xl mb-3 text-red-600 flex items-center gap-2">
+                <i class="fa-solid fa-triangle-exclamation"></i> 警告
+            </h2>
+            <p class="font-bold mb-4 text-gray-700">確定要刪除 <span id="delete-target-name" class="text-red-500 text-lg"></span> 嗎？此動作將清空該主題所有的抽卡圖片紀錄！</p>
+            <p class="text-sm font-bold text-gray-600 mb-2">請輸入 <strong class="text-red-600 bg-red-100 px-1 font-pixel">DELETE</strong> 確認刪除：</p>
+            <input type="text" id="delete-confirm-input" class="w-full border-2 border-gray-800 rounded p-2 mb-4 font-pixel uppercase focus:outline-none focus:border-red-500">
+            
+            <div class="flex gap-2">
+                <button onclick="closeDeleteModal()" class="flex-1 bg-gray-300 border-2 border-gray-800 font-bold py-2 rounded">取消</button>
+                <button onclick="confirmDeleteTheme()" class="flex-1 poke-btn py-2 font-bold">確認刪除</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 提示框 -->
+    <div id="msg-box" class="fixed inset-0 modal-overlay z-[70] hidden flex items-center justify-center p-4 transition-opacity">
+        <div class="poke-card-bg w-full max-w-xs p-6 text-center shadow-2xl">
+            <div id="msg-icon" class="text-5xl mb-4"></div>
+            <p id="msg-text" class="font-bold text-lg mb-6"></p>
+            <button onclick="closeMsgBox()" class="poke-btn px-8 py-2 font-bold">確定</button>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * ==========================================
+         * 狀態與全域變數
+         * ==========================================
+         */
+        let themes = [];
+        let currentThemeId = null;
+        
+        // 抽卡狀態
+        let maxRedraws = 2;
+        let currentRedraws = 0;
+        let isForceConfirm = false; // 第三次強迫確認
+        let currentDrawCount = 1;
+        let currentDrawnNumbers = []; 
+        let pendingUploads = {}; 
+
+        // 圖片極致壓縮參數 (確保存 500 張)
+        const MAX_IMG_WIDTH = 300; 
+        const MAX_IMG_HEIGHT = 400; 
+        const WEBP_QUALITY = 0.4;
+
+        // DOM 元素快取
+        const drawSlider = document.getElementById('draw-slider');
+        const drawCountDisplay = document.getElementById('draw-count-display');
+        const themeSelector = document.getElementById('theme-selector');
+
+        /**
+         * ==========================================
+         * 初始化與基礎功能
+         * ==========================================
+         */
+        window.onload = () => {
+            loadThemes();
+            setupEventListeners();
+            if (themes.length > 0) {
+                changeActiveTheme(themes[0].id);
+            } else {
+                updateUIForNoTheme();
+            }
+            calculateStorage();
+        };
+
+        function setupEventListeners() {
+            drawSlider.addEventListener('input', (e) => {
+                currentDrawCount = parseInt(e.target.value);
+                drawCountDisplay.textContent = currentDrawCount;
+            });
+        }
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+            document.getElementById(`tab-${tabName}`).classList.remove('hidden');
+            document.querySelector(`.tab-btn[onclick="switchTab('${tabName}')"]`).classList.add('active');
+
+            if (tabName === 'draw') updateDrawUI();
+            if (tabName === 'inventory') renderInventory();
+        }
+
+        function showMsg(text, type = "success") {
+            const icon = document.getElementById('msg-icon');
+            if (type === "error") icon.innerHTML = '<i class="fa-solid fa-circle-xmark text-red-500"></i>';
+            else if (type === "warning") icon.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-yellow-500"></i>';
+            else icon.innerHTML = '<i class="fa-solid fa-circle-check text-green-500"></i>';
+            
+            document.getElementById('msg-text').textContent = text;
+            document.getElementById('msg-box').classList.remove('hidden');
+        }
+        function closeMsgBox() { document.getElementById('msg-box').classList.add('hidden'); }
+
+        /**
+         * ==========================================
+         * 圖片極致壓縮模組 (WebP)
+         * ==========================================
+         */
+        function compressImage(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = event => {
+                    const img = new Image();
+                    img.src = event.target.result;
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        let width = img.width;
+                        let height = img.height;
+
+                        if (width > MAX_IMG_WIDTH) {
+                            height = Math.round((height * MAX_IMG_WIDTH) / width);
+                            width = MAX_IMG_WIDTH;
+                        }
+                        if (height > MAX_IMG_HEIGHT) {
+                            width = Math.round((width * MAX_IMG_HEIGHT) / height);
+                            height = MAX_IMG_HEIGHT;
+                        }
+
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+                        resolve(canvas.toDataURL('image/webp', WEBP_QUALITY));
+                    };
+                    img.onerror = reject;
+                };
+                reader.onerror = reject;
+            });
+        }
+
+        /**
+         * ==========================================
+         * LocalStorage 資料與容量管理
+         * ==========================================
+         */
+        function loadThemes() {
+            try { themes = JSON.parse(localStorage.getItem('gachaGen_themes') || '[]'); } 
+            catch(e) { themes = []; }
+            updateThemeDropdown();
+            renderThemesList();
+        }
+
+        function saveThemes() {
+            try {
+                localStorage.setItem('gachaGen_themes', JSON.stringify(themes));
+                updateThemeDropdown();
+                renderThemesList();
+                calculateStorage();
+            } catch (e) {
+                showMsg("儲存空間已滿！請先將部分主題匯出備份後刪除釋放空間。", "error");
+            }
+        }
+
+        function calculateStorage() {
+            let total = 0;
+            for(let key in localStorage) {
+                if(localStorage.hasOwnProperty(key)) total += localStorage[key].length;
+            }
+            const max = 5242880;
+            const percent = Math.min(100, (total / max) * 100);
+            const bar = document.getElementById('storage-progress');
+            document.getElementById('storage-usage-text').textContent = `${percent.toFixed(1)}%`;
+            bar.style.width = `${percent}%`;
+            bar.className = 'h-2 rounded-full transition-all ' + 
+                (percent > 90 ? 'bg-red-500' : percent > 70 ? 'bg-yellow-500' : 'bg-green-500');
+        }
+
+        /**
+         * ==========================================
+         * 匯出 / 匯入主題 (備份功能)
+         * ==========================================
+         */
+        function exportTheme(id) {
+            const theme = themes.find(t => t.id === id);
+            if(!theme) return;
+            const dataStr = JSON.stringify(theme);
+            const blob = new Blob([dataStr], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `GachaGen_${theme.name}_備份.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            showMsg(`「${theme.name}」已成功匯出並下載！`);
+        }
+
+        function importThemeData(event) {
+            const file = event.target.files[0];
+            if(!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const importedTheme = JSON.parse(e.target.result);
+                    
+                    // 簡單驗證是否為我們的主題格式
+                    if(!importedTheme.name || importedTheme.initialTotal === undefined) {
+                        throw new Error("格式不正確");
+                    }
+                    
+                    // 賦予新 ID 避免覆蓋現有主題
+                    importedTheme.id = Date.now().toString();
+                    themes.push(importedTheme);
+                    saveThemes();
+                    showMsg(`主題「${importedTheme.name}」匯入成功！`);
+                    changeActiveTheme(importedTheme.id);
+                    
+                } catch(error) {
+                    showMsg("匯入失敗：檔案格式不正確", "error");
+                }
+                event.target.value = ''; // 清空 input
+            };
+            reader.readAsText(file);
+        }
+
+        /**
+         * ==========================================
+         * 主題管理 (設定區)
+         * ==========================================
+         */
+        function updateThemeDropdown() {
+            themeSelector.innerHTML = '<option value="">請選擇主題...</option>';
+            themes.forEach(t => {
+                const opt = document.createElement('option');
+                opt.value = t.id; opt.textContent = t.name;
+                if(t.id === currentThemeId) opt.selected = true;
+                themeSelector.appendChild(opt);
+            });
+        }
+
+        function changeActiveTheme(id) {
+            if(!id) { currentThemeId = null; updateUIForNoTheme(); return; }
+            currentThemeId = id;
+            resetDrawState();
+            switchTab('draw');
+        }
+
+        function showAddThemeModal() {
+            document.getElementById('add-theme-form').reset();
+            document.getElementById('preview-theme-img').classList.add('hidden');
+            tempThemeImg = null;
+            document.getElementById('add-theme-modal').classList.remove('hidden');
+        }
+        function closeAddThemeModal() { document.getElementById('add-theme-modal').classList.add('hidden'); }
+
+        let tempThemeImg = null;
+        async function previewThemeImage(e) {
+            if(e.target.files[0]) {
+                tempThemeImg = await compressImage(e.target.files[0]);
+                document.getElementById('preview-theme-img').src = tempThemeImg;
+                document.getElementById('preview-theme-img').classList.remove('hidden');
+            }
+        }
+
+        function handleThemeSubmit(e) {
+            e.preventDefault();
+            const total = parseInt(document.getElementById('input-theme-total').value);
+            if(total <= 0) return showMsg("卡牌數必須大於0", "error");
+
+            const newTheme = {
+                id: Date.now().toString(),
+                name: document.getElementById('input-theme-name').value,
+                assignee: document.getElementById('input-theme-assignee').value,
+                initialTotal: total,
+                currentTotal: total,
+                image: tempThemeImg || 'https://placehold.co/100/eeeeee/888?text=Theme',
+                inventoryImages: [] 
+            };
+            themes.push(newTheme);
+            saveThemes();
+            closeAddThemeModal();
+            showMsg("主題建立成功！");
+            changeActiveTheme(newTheme.id);
+        }
+
+        function renderThemesList() {
+            const list = document.getElementById('themes-list');
+            list.innerHTML = '';
+            if(themes.length === 0) return list.innerHTML = '<p class="text-gray-500 font-bold text-center py-4">無主題</p>';
+
+            themes.forEach(t => {
+                const isSelected = t.id === currentThemeId;
+                list.innerHTML += `
+                    <div class="poke-card-bg p-3 flex justify-between items-center ${isSelected ? 'border-red-500 ring-2 ring-red-200' : ''}">
+                        <div class="flex items-center gap-3 w-[65%] cursor-pointer" onclick="changeActiveTheme('${t.id}')">
+                            <img src="${t.image}" class="w-12 h-12 rounded object-cover border border-gray-400">
+                            <div class="overflow-hidden">
+                                <h3 class="font-extrabold truncate">${t.name}</h3>
+                                <p class="text-xs text-gray-600 truncate">${t.assignee} | 剩餘: ${t.currentTotal}/${t.initialTotal}</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="event.stopPropagation(); exportTheme('${t.id}')" class="w-8 h-8 flex items-center justify-center bg-blue-100 rounded text-blue-600 hover:bg-blue-200 border border-blue-300 transition" title="匯出備份">
+                                <i class="fa-solid fa-download"></i>
+                            </button>
+                            <button onclick="event.stopPropagation(); initDeleteTheme('${t.id}')" class="w-8 h-8 flex items-center justify-center bg-gray-200 rounded text-red-500 hover:bg-red-200 border border-gray-400 transition" title="刪除">
+                                <i class="fa-solid fa-trash-can"></i>
+                            </button>
+                        </div>
+                    </div>`;
+            });
+        }
+
+        let themeToDelete = null;
+        function initDeleteTheme(id) {
+            themeToDelete = id;
+            document.getElementById('delete-target-name').textContent = themes.find(t=>t.id===id).name;
+            document.getElementById('delete-confirm-input').value = '';
+            document.getElementById('delete-modal').classList.remove('hidden');
+        }
+        function closeDeleteModal() { document.getElementById('delete-modal').classList.add('hidden'); themeToDelete = null;}
+        function confirmDeleteTheme() {
+            if(document.getElementById('delete-confirm-input').value !== 'DELETE') return showMsg("請輸入大寫 DELETE", "error");
+            themes = themes.filter(t => t.id !== themeToDelete);
+            if(currentThemeId === themeToDelete) {
+                currentThemeId = null;
+                updateThemeDropdown();
+                updateUIForNoTheme();
+            }
+            saveThemes();
+            closeDeleteModal();
+            showMsg("主題已刪除");
+        }
+
+        /**
+         * ==========================================
+         * 抽卡核心邏輯 (Draw)
+         * ==========================================
+         */
+        function updateUIForNoTheme() {
+            document.getElementById('no-theme-msg').classList.remove('hidden');
+            document.getElementById('draw-interface').classList.add('hidden');
+            document.getElementById('inv-no-theme').classList.remove('hidden');
+            document.getElementById('inv-content').classList.add('hidden');
+        }
+
+        function adjustDrawCount(change) {
+            const theme = themes.find(t => t.id === currentThemeId);
+            const max = theme.currentTotal;
+            let val = parseInt(drawSlider.value) + change;
+            if (val < 1) val = 1;
+            if (val > max) val = max;
+            drawSlider.value = val;
+            currentDrawCount = val;
+            drawCountDisplay.textContent = val;
+        }
+
+        function updateDrawUI() {
+            if(!currentThemeId) return updateUIForNoTheme();
+            const theme = themes.find(t => t.id === currentThemeId);
+            
+            document.getElementById('no-theme-msg').classList.add('hidden');
+            document.getElementById('draw-interface').classList.remove('hidden');
+            document.getElementById('draw-theme-title').textContent = theme.name;
+            document.getElementById('draw-theme-assignee').textContent = theme.assignee;
+            document.getElementById('draw-theme-remain').textContent = theme.currentTotal;
+
+            // ★ 抽卡數量上限改為：該主題目前的剩餘卡片總數 ★
+            const maxDrawable = theme.currentTotal;
+            
+            if(maxDrawable === 0) {
+                document.getElementById('draw-controls').innerHTML = '<h3 class="text-xl font-bold mt-10 text-red-500 bg-red-100 p-4 border-2 border-red-500 rounded-lg shadow-md text-center">所有卡牌已全數抽完！<br><span class="text-sm text-gray-700 mt-2 block">請至包包查看您的戰利品</span></h3>';
+            } else {
+                drawSlider.max = maxDrawable;
+                drawSlider.value = 1;
+                currentDrawCount = 1;
+                drawCountDisplay.textContent = 1;
+                document.getElementById('draw-slider-max').textContent = maxDrawable;
+            }
+        }
+
+        function resetDrawState() {
+            currentRedraws = 0;
+            isForceConfirm = false;
+            document.getElementById('draw-controls').classList.remove('hidden');
+            document.getElementById('draw-animation-area').classList.add('hidden');
+            document.getElementById('draw-result-area').classList.add('hidden');
+            document.getElementById('photo-upload-area').classList.add('hidden');
+        }
+
+        function startDraw() {
+            const theme = themes.find(t => t.id === currentThemeId);
+            if(currentDrawCount > theme.currentTotal) return showMsg("超過剩餘數量", "error");
+
+            document.getElementById('draw-controls').classList.add('hidden');
+            document.getElementById('draw-result-area').classList.add('hidden');
+            document.getElementById('draw-animation-area').classList.remove('hidden');
+
+            currentDrawnNumbers = [];
+            const available = Array.from({length: theme.currentTotal}, (_, i) => i + 1);
+            for(let i=0; i<currentDrawCount; i++) {
+                const randIdx = Math.floor(Math.random() * available.length);
+                currentDrawnNumbers.push(available[randIdx]);
+                available.splice(randIdx, 1);
+            }
+
+            setTimeout(() => {
+                document.getElementById('draw-animation-area').classList.add('hidden');
+                revealCardsSequence();
+            }, 3000);
+        }
+
+        function revealCardsSequence() {
+            const resultArea = document.getElementById('draw-result-area');
+            const container = document.getElementById('result-cards-container');
+            const actions = document.getElementById('draw-actions');
+            
+            resultArea.classList.remove('hidden');
+            actions.classList.add('hidden', 'opacity-0');
+            container.innerHTML = '';
+            
+            let tempElements = [];
+
+            currentDrawnNumbers.forEach(num => {
+                const card = document.createElement('div');
+                card.className = "w-16 h-24 bg-white border-4 border-gray-900 rounded flex items-center justify-center shadow-md font-pixel text-xl opacity-0 hidden";
+                card.innerHTML = `<span class="text-gray-800 drop-shadow">${num}</span>`;
+                container.appendChild(card);
+                tempElements.push({el: card, num: num});
+            });
+
+            let currentIdx = 0;
+            const revealInterval = setInterval(() => {
+                if(currentIdx < tempElements.length) {
+                    tempElements[currentIdx].el.classList.remove('hidden');
+                    tempElements[currentIdx].el.classList.add('card-reveal');
+                    if(navigator.vibrate) navigator.vibrate(50);
+                    currentIdx++;
+                } else {
+                    clearInterval(revealInterval);
+                    setTimeout(() => displaySortedCards(container), 800);
+                }
+            }, 600);
+        }
+
+        function displaySortedCards(container) {
+            const sorted = [...currentDrawnNumbers].sort((a,b) => a - b);
+            container.innerHTML = '';
+            sorted.forEach(num => {
+                container.innerHTML += `<div class="w-16 h-24 bg-gradient-to-br from-yellow-100 to-yellow-300 border-4 border-gray-900 rounded flex items-center justify-center shadow-lg font-pixel text-xl transform transition hover:scale-110">
+                    <span class="text-blue-900 drop-shadow">${num}</span>
+                </div>`;
+            });
+
+            const actions = document.getElementById('draw-actions');
+            const btnRedraw = document.getElementById('btn-redraw');
+            actions.classList.remove('hidden');
+            setTimeout(() => actions.classList.remove('opacity-0'), 50);
+
+            if(isForceConfirm) {
+                btnRedraw.classList.add('poke-btn-disabled');
+                setTimeout(() => confirmDraw(), 1500); 
+            } else {
+                document.getElementById('redraw-count').textContent = maxRedraws - currentRedraws;
+                if(currentRedraws >= maxRedraws - 1) {
+                    document.getElementById('redraw-warning').classList.remove('hidden');
+                    btnRedraw.classList.replace('poke-btn-yellow', 'bg-orange-500');
+                    btnRedraw.style.color = "white";
+                } else {
+                    document.getElementById('redraw-warning').classList.add('hidden');
+                    btnRedraw.classList.replace('bg-orange-500', 'poke-btn-yellow');
+                    btnRedraw.style.color = "";
+                }
+            }
+        }
+
+        function handleRedraw() {
+            if(currentRedraws < maxRedraws) {
+                currentRedraws++;
+                if(currentRedraws === maxRedraws) isForceConfirm = true; 
+                document.getElementById('draw-result-area').classList.add('hidden');
+                document.getElementById('draw-controls').classList.remove('hidden');
+            }
+        }
+
+        /**
+         * ==========================================
+         * 確認與拍照紀錄
+         * ==========================================
+         */
+        function confirmDraw() {
+            const theme = themes.find(t => t.id === currentThemeId);
+            
+            theme.currentTotal -= currentDrawnNumbers.length;
+            
+            document.getElementById('draw-result-area').classList.add('hidden');
+            const uploadArea = document.getElementById('photo-upload-area');
+            uploadArea.classList.remove('hidden');
+            document.getElementById('upload-count-display').textContent = currentDrawnNumbers.length;
+            
+            const slots = document.getElementById('upload-slots-container');
+            slots.innerHTML = '';
+            pendingUploads = {};
+
+            currentDrawnNumbers.forEach((_, idx) => {
+                slots.innerHTML += `
+                <div class="poke-card-bg p-3 flex gap-3 items-center bg-gray-50">
+                    <div class="w-10 h-10 bg-yellow-400 border-2 border-gray-800 font-pixel rounded-full flex items-center justify-center text-sm font-bold shadow">${idx + 1}</div>
+                    <div class="flex-1">
+                        <input type="file" id="upload-${idx}" accept="image/*" capture="environment" class="hidden" onchange="handlePhotoUpload(event, ${idx})">
+                        <button onclick="document.getElementById('upload-${idx}').click()" class="w-full bg-white border-2 border-gray-800 font-bold py-2 rounded shadow-sm hover:bg-gray-100 flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-camera"></i> 拍照/上傳
+                        </button>
+                    </div>
+                    <div class="w-16 h-16 border-2 border-dashed border-gray-400 rounded flex items-center justify-center bg-white overflow-hidden">
+                        <img id="preview-${idx}" class="w-full h-full object-cover hidden">
+                        <i id="icon-${idx}" class="fa-solid fa-image text-gray-300"></i>
+                    </div>
+                </div>`;
+            });
+            saveThemes(); 
+            updateDrawUI();
+        }
+
+        async function handlePhotoUpload(e, idx) {
+            if(e.target.files[0]) {
+                try {
+                    const compressed = await compressImage(e.target.files[0]);
+                    pendingUploads[idx] = compressed;
+                    document.getElementById(`preview-${idx}`).src = compressed;
+                    document.getElementById(`preview-${idx}`).classList.remove('hidden');
+                    document.getElementById(`icon-${idx}`).classList.add('hidden');
+                } catch(err) {
+                    showMsg("圖片處理失敗", "error");
+                }
+            }
+        }
+
+        function finishUploads() {
+            const theme = themes.find(t => t.id === currentThemeId);
+            const total = currentDrawnNumbers.length;
+            
+            if(Object.keys(pendingUploads).length < total) {
+                if(!confirm(`還有未上傳圖片的卡牌，將以預設圖代替，確定完成嗎？`)) return;
+            }
+
+            for (let i = 0; i < total; i++) {
+                theme.inventoryImages.push(pendingUploads[i] || 'https://placehold.co/300x400/dddddd/999?text=No+Photo');
+            }
+
+            saveThemes();
+            resetDrawState();
+            showMsg("已成功紀錄並放入包包！");
+            switchTab('inventory');
+        }
+
+        /**
+         * ==========================================
+         * 包包檢視 (Inventory)
+         * ==========================================
+         */
+        function renderInventory() {
+            if(!currentThemeId) return;
+            const theme = themes.find(t => t.id === currentThemeId);
+            
+            document.getElementById('inv-no-theme').classList.add('hidden');
+            document.getElementById('inv-content').classList.remove('hidden');
+            
+            document.getElementById('inv-theme-name').textContent = theme.name;
+            document.getElementById('inv-collected').textContent = theme.inventoryImages.length;
+
+            const gallery = document.getElementById('gallery-container');
+            const emptyMsg = document.getElementById('empty-gallery-msg');
+            gallery.innerHTML = '';
+
+            if(theme.inventoryImages.length === 0) {
+                emptyMsg.classList.remove('hidden');
+            } else {
+                emptyMsg.classList.add('hidden');
+                theme.inventoryImages.forEach((imgBase64, index) => {
+                    gallery.innerHTML += `
+                        <div class="aspect-[3/4] rounded border-2 border-gray-800 bg-white overflow-hidden shadow-sm relative">
+                            <div class="absolute top-0 left-0 bg-yellow-400 border-b-2 border-r-2 border-gray-800 px-1 font-pixel text-[10px] font-bold z-10 text-black">
+                                #${index + 1}
+                            </div>
+                            <img src="${imgBase64}" class="w-full h-full object-cover">
+                        </div>
+                    `;
+                });
+            }
+        }
+
+    </script>
+</body>
+</html>
