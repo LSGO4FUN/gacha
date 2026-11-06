@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
     <title>寶可夢抽卡隨機生成器 - 備份升級版</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -103,6 +103,22 @@
             background-color: rgba(0, 0, 0, 0.7);
             backdrop-filter: blur(4px);
         }
+        #image-viewer {
+            padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+            touch-action: pan-y pinch-zoom;
+        }
+        #image-viewer-img {
+            max-width: 96vw;
+            max-height: 88dvh;
+            object-fit: contain;
+            touch-action: pinch-zoom;
+            transition: transform 0.18s ease;
+        }
+        #image-viewer-img.zoomed {
+            transform: scale(1.55);
+            cursor: zoom-out;
+        }
+        .gallery-photo { cursor: zoom-in; }
     </style>
 </head>
 <body class="min-h-screen flex flex-col">
@@ -164,6 +180,7 @@
 
                 <!-- 抽卡控制旋鈕與按鈕 -->
                 <div id="draw-controls" class="w-full flex flex-col items-center mt-2">
+                    <div id="draw-control-settings" class="w-full flex flex-col items-center">
                     <label class="block font-bold mb-4 text-lg">決定抽卡數量</label>
                     <div class="flex items-center w-full gap-3 px-2">
                         <button onclick="adjustDrawCount(-1)" class="w-10 h-10 rounded-full bg-gray-200 border-2 border-gray-800 font-bold text-xl active:bg-gray-300">-</button>
@@ -187,6 +204,11 @@
                         </div>
                         <span class="relative z-10 mt-4 font-extrabold text-xl text-gray-900 font-pixel drop-shadow-md">抽卡!</span>
                     </button>
+                    </div>
+                    <div id="draw-empty-msg" class="hidden text-xl font-bold mt-10 text-red-500 bg-red-100 p-4 border-2 border-red-500 rounded-lg shadow-md text-center">
+                        所有卡牌已全數抽完！
+                        <span class="text-sm text-gray-700 mt-2 block">請至包包查看您的戰利品</span>
+                    </div>
                 </div>
 
                 <!-- 抽卡動畫等待區 -->
@@ -283,12 +305,13 @@
             <!-- 容量指示器 -->
             <div class="mt-8 p-4 bg-gray-200 rounded-lg border-2 border-gray-400">
                 <div class="flex justify-between text-xs font-bold text-gray-600 mb-1">
-                    <span>LocalStorage 容量使用率 (支援~500張)</span>
-                    <span id="storage-usage-text">0%</span>
+                    <span>瀏覽器儲存空間估算使用率</span>
+                    <span id="storage-usage-text">計算中...</span>
                 </div>
                 <div class="w-full bg-white rounded-full h-2 border border-gray-400 overflow-hidden">
                     <div id="storage-progress" class="bg-green-500 h-2 rounded-full transition-all" style="width: 0%"></div>
                 </div>
+                <p id="storage-detail" class="text-xs text-gray-600 mt-2 leading-relaxed">圖片將以 WebP 壓縮，並使用 IndexedDB 儲存；實際容量依手機瀏覽器提供的空間而定。</p>
             </div>
         </section>
 
@@ -355,224 +378,571 @@
         </div>
     </div>
 
+    <!-- 包包圖片放大檢視 -->
+    <div id="image-viewer" class="fixed inset-0 z-[80] hidden flex flex-col items-center justify-center bg-black/95" onclick="closeImageViewer(event)">
+        <button type="button" onclick="closeImageViewer()" aria-label="關閉圖片" class="absolute top-4 right-4 z-10 w-11 h-11 rounded-full bg-white text-gray-900 text-2xl font-bold border-2 border-gray-900 shadow-lg">×</button>
+        <p id="image-viewer-caption" class="text-white font-bold text-sm mb-3"></p>
+        <div class="w-full flex-1 min-h-0 flex items-center justify-center overflow-auto" onclick="event.stopPropagation()">
+            <img id="image-viewer-img" src="" alt="卡牌放大圖片" onclick="this.classList.toggle('zoomed')" class="rounded-lg shadow-2xl">
+        </div>
+        <p class="text-gray-300 text-xs mt-3">點擊圖片可再放大／縮小；手機也可使用雙指縮放</p>
+    </div>
+
     <script>
         /**
-         * ==========================================
-         * 狀態與全域變數
-         * ==========================================
+         * GachaGen - IndexedDB 圖片儲存升級版
+         * 保留原有抽卡、重抽、主題管理及 JSON 匯入／匯出功能。
          */
         let themes = [];
         let currentThemeId = null;
-        
-        // 抽卡狀態
-        let maxRedraws = 2;
-        let currentRedraws = 0;
-        let isForceConfirm = false; // 第三次強迫確認
-        let currentDrawCount = 1;
-        let currentDrawnNumbers = []; 
-        let pendingUploads = {}; 
+        let activeTab = 'draw';
 
-        // 圖片極致壓縮參數 (確保存 500 張)
-        const MAX_IMG_WIDTH = 300; 
-        const MAX_IMG_HEIGHT = 400; 
+        // 每一次抽卡會有獨立的重抽 session；切換主題或重新抽卡時一定重置。
+        const maxRedraws = 2;
+        let currentRedraws = 0;
+        let isForceConfirm = false;
+        let currentDrawCount = 1;
+        let currentDrawnNumbers = [];
+        let pendingUploads = {};
+        let drawSessionThemeId = null;
+        let drawConfirmed = false;
+        let pendingImagesAppended = 0;
+        let drawAnimationTimer = null;
+        let revealTimer = null;
+        let tempThemeImg = null;
+        let storageMode = 'indexeddb';
+        let persistentStorageGranted = false;
+        let dbPromise = null;
+        let saveQueue = Promise.resolve();
+
+        const DB_NAME = 'GachaGenDB';
+        const DB_VERSION = 1;
+        const DB_THEMES_STORE = 'themes';
+        const DB_IMAGES_STORE = 'images';
+        const LEGACY_THEMES_KEY = 'gachaGen_themes';
+        const ACTIVE_THEME_KEY = 'gachaGen_activeThemeId';
+        const STORAGE_MODE_KEY = 'gachaGen_storageMode';
+
+        // 圖片維持小尺寸 WebP；IndexedDB 以 Blob 儲存，避免 Base64 額外增加約 1/3 體積。
+        const MAX_IMG_WIDTH = 300;
+        const MAX_IMG_HEIGHT = 400;
         const WEBP_QUALITY = 0.4;
 
-        // DOM 元素快取
         const drawSlider = document.getElementById('draw-slider');
         const drawCountDisplay = document.getElementById('draw-count-display');
         const themeSelector = document.getElementById('theme-selector');
 
-        /**
-         * ==========================================
-         * 初始化與基礎功能
-         * ==========================================
-         */
-        window.onload = () => {
-            loadThemes();
+        window.onload = async () => {
             setupEventListeners();
-            if (themes.length > 0) {
-                changeActiveTheme(themes[0].id);
+            await loadThemes();
+            await requestPersistentStorage();
+
+            if (currentThemeId) {
+                changeActiveTheme(currentThemeId, false);
             } else {
                 updateUIForNoTheme();
+                updateThemeDropdown();
             }
             calculateStorage();
         };
 
         function setupEventListeners() {
             drawSlider.addEventListener('input', (e) => {
-                currentDrawCount = parseInt(e.target.value);
+                currentDrawCount = parseInt(e.target.value, 10) || 1;
                 drawCountDisplay.textContent = currentDrawCount;
+            });
+
+            const gallery = document.getElementById('gallery-container');
+            gallery.addEventListener('click', (event) => {
+                const img = event.target.closest('img[data-image-index]');
+                if (!img) return;
+                const theme = themes.find(t => t.id === currentThemeId);
+                if (!theme) return;
+                const index = Number(img.dataset.imageIndex);
+                openImageViewer(theme.inventoryImages[index], `#${index + 1} 卡牌照片`);
+            });
+
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') closeImageViewer();
             });
         }
 
         function switchTab(tabName) {
+            activeTab = tabName;
             document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
             document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
             document.getElementById(`tab-${tabName}`).classList.remove('hidden');
-            document.querySelector(`.tab-btn[onclick="switchTab('${tabName}')"]`).classList.add('active');
+            const tabButton = document.querySelector(`.tab-btn[onclick="switchTab('${tabName}')"]`);
+            if (tabButton) tabButton.classList.add('active');
 
             if (tabName === 'draw') updateDrawUI();
             if (tabName === 'inventory') renderInventory();
+            if (tabName === 'themes') renderThemesList();
         }
 
-        function showMsg(text, type = "success") {
+        function showMsg(text, type = 'success') {
             const icon = document.getElementById('msg-icon');
-            if (type === "error") icon.innerHTML = '<i class="fa-solid fa-circle-xmark text-red-500"></i>';
-            else if (type === "warning") icon.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-yellow-500"></i>';
+            if (type === 'error') icon.innerHTML = '<i class="fa-solid fa-circle-xmark text-red-500"></i>';
+            else if (type === 'warning') icon.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-yellow-500"></i>';
             else icon.innerHTML = '<i class="fa-solid fa-circle-check text-green-500"></i>';
-            
             document.getElementById('msg-text').textContent = text;
             document.getElementById('msg-box').classList.remove('hidden');
         }
-        function closeMsgBox() { document.getElementById('msg-box').classList.add('hidden'); }
 
-        /**
-         * ==========================================
-         * 圖片極致壓縮模組 (WebP)
-         * ==========================================
-         */
-        function compressImage(file) {
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.readAsDataURL(file);
-                reader.onload = event => {
-                    const img = new Image();
-                    img.src = event.target.result;
-                    img.onload = () => {
-                        const canvas = document.createElement('canvas');
-                        let width = img.width;
-                        let height = img.height;
+        function closeMsgBox() {
+            document.getElementById('msg-box').classList.add('hidden');
+        }
 
-                        if (width > MAX_IMG_WIDTH) {
-                            height = Math.round((height * MAX_IMG_WIDTH) / width);
-                            width = MAX_IMG_WIDTH;
-                        }
-                        if (height > MAX_IMG_HEIGHT) {
-                            width = Math.round((width * MAX_IMG_HEIGHT) / height);
-                            height = MAX_IMG_HEIGHT;
-                        }
+        function openImageViewer(src, caption = '') {
+            if (!src) return;
+            const viewer = document.getElementById('image-viewer');
+            const image = document.getElementById('image-viewer-img');
+            image.classList.remove('zoomed');
+            image.src = src;
+            document.getElementById('image-viewer-caption').textContent = caption;
+            viewer.classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
+        }
 
-                        canvas.width = width;
-                        canvas.height = height;
-                        const ctx = canvas.getContext('2d');
-                        ctx.drawImage(img, 0, 0, width, height);
-                        resolve(canvas.toDataURL('image/webp', WEBP_QUALITY));
-                    };
-                    img.onerror = reject;
+        function closeImageViewer(event) {
+            if (event && event.target !== document.getElementById('image-viewer')) return;
+            const viewer = document.getElementById('image-viewer');
+            viewer.classList.add('hidden');
+            const image = document.getElementById('image-viewer-img');
+            image.src = '';
+            image.classList.remove('zoomed');
+            document.body.style.overflow = '';
+        }
+
+        /** IndexedDB：主題資料與圖片分開儲存，圖片使用 Blob。 */
+        function openGachaDB() {
+            if (!('indexedDB' in window)) {
+                return Promise.reject(new Error('此瀏覽器不支援 IndexedDB'));
+            }
+            if (dbPromise) return dbPromise;
+
+            dbPromise = new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                request.onupgradeneeded = () => {
+                    const db = request.result;
+                    if (!db.objectStoreNames.contains(DB_THEMES_STORE)) {
+                        db.createObjectStore(DB_THEMES_STORE, { keyPath: 'id' });
+                    }
+                    if (!db.objectStoreNames.contains(DB_IMAGES_STORE)) {
+                        db.createObjectStore(DB_IMAGES_STORE, { keyPath: 'key' });
+                    }
                 };
-                reader.onerror = reject;
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error || new Error('無法開啟 IndexedDB'));
+                request.onblocked = () => reject(new Error('IndexedDB 正被其他分頁占用，請關閉其他 GachaGen 分頁後重試'));
+            }).catch(error => {
+                dbPromise = null;
+                throw error;
+            });
+            return dbPromise;
+        }
+
+        function requestToPromise(request) {
+            return new Promise((resolve, reject) => {
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error || new Error('IndexedDB 讀取失敗'));
             });
         }
 
-        /**
-         * ==========================================
-         * LocalStorage 資料與容量管理
-         * ==========================================
-         */
-        function loadThemes() {
-            try { themes = JSON.parse(localStorage.getItem('gachaGen_themes') || '[]'); } 
-            catch(e) { themes = []; }
+        function dataURLToBlob(dataURL) {
+            const parts = dataURL.split(',');
+            const mimeMatch = parts[0].match(/data:([^;]+);base64/i);
+            if (!mimeMatch || !parts[1]) throw new Error('圖片資料格式不正確');
+            const binary = atob(parts[1]);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return new Blob([bytes], { type: mimeMatch[1] });
+        }
+
+        function blobToDataURL(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = () => reject(reader.error || new Error('圖片讀取失敗'));
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        function getImageRecordValue(value) {
+            if (typeof value === 'string' && value.startsWith('data:image/')) {
+                return { value: dataURLToBlob(value), isBlob: true };
+            }
+            return { value: value || '', isBlob: false };
+        }
+
+        async function readThemesFromIDB(db) {
+            const tx = db.transaction([DB_THEMES_STORE, DB_IMAGES_STORE], 'readonly');
+            const themeRequest = tx.objectStore(DB_THEMES_STORE).getAll();
+            const imageRequest = tx.objectStore(DB_IMAGES_STORE).getAll();
+            const [storedThemes, imageRecords] = await Promise.all([
+                requestToPromise(themeRequest),
+                requestToPromise(imageRequest)
+            ]);
+            const imageMap = new Map(imageRecords.map(record => [record.key, record]));
+
+            const restored = await Promise.all((storedThemes || []).map(async stored => {
+                const theme = { ...stored };
+                const coverRecord = imageMap.get(`cover:${theme.id}`);
+                if (coverRecord) {
+                    theme.image = coverRecord.isBlob ? await blobToDataURL(coverRecord.value) : coverRecord.value;
+                } else {
+                    theme.image = theme.image || 'https://placehold.co/100/eeeeee/888?text=Theme';
+                }
+
+                const count = Number.isInteger(theme.inventoryImageCount)
+                    ? theme.inventoryImageCount
+                    : 0;
+                const images = [];
+                for (let i = 0; i < count; i++) {
+                    const record = imageMap.get(`inventory:${theme.id}:${i}`);
+                    if (!record) {
+                        images.push('https://placehold.co/300x400/dddddd/999?text=No+Photo');
+                    } else {
+                        images.push(record.isBlob ? await blobToDataURL(record.value) : record.value);
+                    }
+                }
+                delete theme.inventoryImageCount;
+                theme.inventoryImages = images;
+                theme.currentTotal = Number.isFinite(theme.currentTotal) ? theme.currentTotal : Number(theme.initialTotal || 0);
+                theme.initialTotal = Number(theme.initialTotal || 0);
+                theme.assignee = theme.assignee || '';
+                return theme;
+            }));
+            return restored;
+        }
+
+        async function writeThemesToIDB(snapshot) {
+            const db = await openGachaDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction([DB_THEMES_STORE, DB_IMAGES_STORE], 'readwrite');
+                const themeStore = tx.objectStore(DB_THEMES_STORE);
+                const imageStore = tx.objectStore(DB_IMAGES_STORE);
+                themeStore.clear();
+                imageStore.clear();
+
+                try {
+                    snapshot.forEach(original => {
+                        const theme = { ...original };
+                        const cover = theme.image || 'https://placehold.co/100/eeeeee/888?text=Theme';
+                        const inventory = Array.isArray(theme.inventoryImages) ? theme.inventoryImages : [];
+                        delete theme.image;
+                        delete theme.inventoryImages;
+                        theme.inventoryImageCount = inventory.length;
+                        themeStore.put(theme);
+
+                        const coverRecord = getImageRecordValue(cover);
+                        imageStore.put({ key: `cover:${theme.id}`, ...coverRecord });
+                        inventory.forEach((image, index) => {
+                            const record = getImageRecordValue(image);
+                            imageStore.put({ key: `inventory:${theme.id}:${index}`, ...record });
+                        });
+                    });
+                } catch (error) {
+                    try { tx.abort(); } catch (_) {}
+                    reject(error);
+                    return;
+                }
+
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error || new Error('IndexedDB 儲存失敗'));
+                tx.onabort = () => reject(tx.error || new Error('IndexedDB 儲存交易已取消'));
+            });
+        }
+
+        async function loadThemes() {
+            try {
+                // 若上次因 IndexedDB 寫入錯誤而切到備援，先讀取較新的 LocalStorage 資料。
+                if (localStorage.getItem(STORAGE_MODE_KEY) === 'localStorage') {
+                    throw new Error('Using LocalStorage fallback');
+                }
+                const db = await openGachaDB();
+                const dbThemes = await readThemesFromIDB(db);
+                if (dbThemes.length > 0) {
+                    themes = dbThemes;
+                } else {
+                    // 第一次升級時，自動搬移舊版 LocalStorage 資料到 IndexedDB。
+                    const legacyText = localStorage.getItem(LEGACY_THEMES_KEY);
+                    const legacyThemes = legacyText ? JSON.parse(legacyText) : [];
+                    themes = Array.isArray(legacyThemes) ? legacyThemes.map(normalizeImportedTheme) : [];
+                    if (themes.length > 0) {
+                        const migrated = await saveThemes({ silent: true });
+                        if (migrated) {
+                            try { localStorage.removeItem(LEGACY_THEMES_KEY); } catch (_) {}
+                        }
+                    }
+                }
+                storageMode = 'indexeddb';
+                try { localStorage.removeItem(STORAGE_MODE_KEY); } catch (_) {}
+            } catch (error) {
+                storageMode = 'localStorage';
+                try { localStorage.setItem(STORAGE_MODE_KEY, 'localStorage'); } catch (_) {}
+                console.warn('IndexedDB 無法使用，改用 LocalStorage：', error);
+                try {
+                    const legacy = JSON.parse(localStorage.getItem(LEGACY_THEMES_KEY) || '[]');
+                    themes = Array.isArray(legacy) ? legacy.map(normalizeImportedTheme) : [];
+                } catch (_) {
+                    themes = [];
+                }
+                if (error && error.name !== 'SecurityError') {
+                    showMsg('目前無法啟用 IndexedDB，將暫時使用舊式儲存方式；大型圖片可能受 5MB 限制。', 'warning');
+                }
+            }
+
+            const savedActiveId = localStorage.getItem(ACTIVE_THEME_KEY);
+            currentThemeId = themes.some(t => t.id === savedActiveId)
+                ? savedActiveId
+                : (themes[0] ? themes[0].id : null);
             updateThemeDropdown();
             renderThemesList();
         }
 
-        function saveThemes() {
-            try {
-                localStorage.setItem('gachaGen_themes', JSON.stringify(themes));
+        function normalizeImportedTheme(theme) {
+            const normalized = { ...theme };
+            normalized.id = String(normalized.id || Date.now() + Math.random());
+            normalized.initialTotal = Number(normalized.initialTotal || 0);
+            normalized.currentTotal = Number.isFinite(Number(normalized.currentTotal))
+                ? Number(normalized.currentTotal)
+                : normalized.initialTotal;
+            normalized.assignee = normalized.assignee || '';
+            normalized.image = normalized.image || 'https://placehold.co/100/eeeeee/888?text=Theme';
+            normalized.inventoryImages = Array.isArray(normalized.inventoryImages) ? normalized.inventoryImages : [];
+            return normalized;
+        }
+
+        function saveThemes(options = {}) {
+            const runSave = async () => {
+                const snapshot = themes.map(theme => normalizeImportedTheme(theme));
+                try {
+                    await writeThemesToIDB(snapshot);
+                    storageMode = 'indexeddb';
+                    try { localStorage.removeItem(LEGACY_THEMES_KEY); } catch (_) {}
+                    try { localStorage.removeItem(STORAGE_MODE_KEY); } catch (_) {}
+                } catch (idbError) {
+                    console.warn('IndexedDB 儲存失敗，嘗試 LocalStorage：', idbError);
+                    try {
+                        localStorage.setItem(LEGACY_THEMES_KEY, JSON.stringify(snapshot));
+                        localStorage.setItem(STORAGE_MODE_KEY, 'localStorage');
+                        storageMode = 'localStorage';
+                    } catch (localError) {
+                        if (!options.silent) {
+                            showMsg('儲存失敗：瀏覽器儲存空間不足或不允許此頁面儲存資料。請先匯出主題備份，再清出空間。', 'error');
+                        }
+                        return false;
+                    }
+                }
+
                 updateThemeDropdown();
                 renderThemesList();
                 calculateStorage();
-            } catch (e) {
-                showMsg("儲存空間已滿！請先將部分主題匯出備份後刪除釋放空間。", "error");
+                return true;
+            };
+
+            const task = saveQueue.then(runSave, runSave);
+            saveQueue = task.catch(() => {});
+            return task;
+        }
+
+        async function requestPersistentStorage() {
+            try {
+                if (navigator.storage && typeof navigator.storage.persist === 'function') {
+                    persistentStorageGranted = await navigator.storage.persist();
+                }
+            } catch (_) {
+                persistentStorageGranted = false;
             }
         }
 
-        function calculateStorage() {
-            let total = 0;
-            for(let key in localStorage) {
-                if(localStorage.hasOwnProperty(key)) total += localStorage[key].length;
-            }
-            const max = 5242880;
-            const percent = Math.min(100, (total / max) * 100);
+        function formatBytes(bytes) {
+            if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+            return `${(bytes / Math.pow(1024, index)).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+        }
+
+        async function calculateStorage() {
+            const text = document.getElementById('storage-usage-text');
+            const detail = document.getElementById('storage-detail');
             const bar = document.getElementById('storage-progress');
-            document.getElementById('storage-usage-text').textContent = `${percent.toFixed(1)}%`;
+            let usage = 0;
+            let quota = 0;
+            let percent = 0;
+
+            try {
+                if (navigator.storage && typeof navigator.storage.estimate === 'function') {
+                    const estimate = await navigator.storage.estimate();
+                    usage = estimate.usage || 0;
+                    quota = estimate.quota || 0;
+                }
+            } catch (_) {}
+
+            if (quota > 0) {
+                percent = Math.min(100, (usage / quota) * 100);
+                text.textContent = `${percent.toFixed(1)}%`;
+                const storageDescription = storageMode === 'indexeddb'
+                    ? '圖片使用 WebP 壓縮並以 Blob 存在 IndexedDB。'
+                    : '目前使用 LocalStorage 備援方式，圖片較多時仍可能受約 5 MB 限制。';
+                detail.textContent = `此網站來源目前約使用 ${formatBytes(usage)}／可用配額 ${formatBytes(quota)}。${storageDescription}${persistentStorageGranted ? ' 已取得瀏覽器持久儲存許可。' : ' 瀏覽器是否保留資料仍依裝置與瀏覽器政策而定。'}`;
+            } else {
+                let localBytes = 0;
+                try {
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        localBytes += (key.length + (localStorage.getItem(key) || '').length) * 2;
+                    }
+                } catch (_) {}
+                const fallbackQuota = 5 * 1024 * 1024;
+                percent = Math.min(100, (localBytes / fallbackQuota) * 100);
+                text.textContent = `${percent.toFixed(1)}%`;
+                detail.textContent = storageMode === 'indexeddb'
+                    ? '瀏覽器未提供儲存配額資訊；圖片仍以 IndexedDB 儲存，容量由瀏覽器管理。'
+                    : `目前採用 LocalStorage 備援，估計使用 ${formatBytes(localBytes)}／約 5 MB；建議改用支援 IndexedDB 的瀏覽器開啟。`;
+            }
+
             bar.style.width = `${percent}%`;
-            bar.className = 'h-2 rounded-full transition-all ' + 
+            bar.className = 'h-2 rounded-full transition-all ' +
                 (percent > 90 ? 'bg-red-500' : percent > 70 ? 'bg-yellow-500' : 'bg-green-500');
         }
 
-        /**
-         * ==========================================
-         * 匯出 / 匯入主題 (備份功能)
-         * ==========================================
-         */
+        /** 圖片壓縮：保留原有 300 x 400 WebP 規格，減少手機端檔案大小。 */
+        function compressImage(file) {
+            return new Promise((resolve, reject) => {
+                if (!file || !file.type.startsWith('image/')) {
+                    reject(new Error('請選擇圖片檔案'));
+                    return;
+                }
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = event => {
+                    const img = new Image();
+                    img.onload = () => {
+                        try {
+                            const canvas = document.createElement('canvas');
+                            let width = img.naturalWidth || img.width;
+                            let height = img.naturalHeight || img.height;
+                            const scale = Math.min(1, MAX_IMG_WIDTH / width, MAX_IMG_HEIGHT / height);
+                            width = Math.max(1, Math.round(width * scale));
+                            height = Math.max(1, Math.round(height * scale));
+                            canvas.width = width;
+                            canvas.height = height;
+                            const context = canvas.getContext('2d', { alpha: false });
+                            if (!context) throw new Error('無法建立圖片畫布');
+                            context.fillStyle = '#ffffff';
+                            context.fillRect(0, 0, width, height);
+                            context.drawImage(img, 0, 0, width, height);
+                            let output = canvas.toDataURL('image/webp', WEBP_QUALITY);
+                            // 少數舊版瀏覽器不支援 WebP，改用 JPEG 避免產生未壓縮 PNG。
+                            if (!output.startsWith('data:image/webp')) {
+                                output = canvas.toDataURL('image/jpeg', WEBP_QUALITY);
+                            }
+                            resolve(output);
+                        } catch (error) {
+                            reject(error);
+                        }
+                    };
+                    img.onerror = () => reject(new Error('無法讀取圖片'));
+                    img.src = event.target.result;
+                };
+                reader.onerror = () => reject(reader.error || new Error('圖片檔案讀取失敗'));
+            });
+        }
+
+        /** 匯出仍維持可攜式 JSON，內含圖片資料；可用於新舊版本互通。 */
         function exportTheme(id) {
             const theme = themes.find(t => t.id === id);
-            if(!theme) return;
+            if (!theme) return;
             const dataStr = JSON.stringify(theme);
-            const blob = new Blob([dataStr], { type: "application/json" });
+            const blob = new Blob([dataStr], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
-            
             const a = document.createElement('a');
             a.href = url;
             a.download = `GachaGen_${theme.name}_備份.json`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
             showMsg(`「${theme.name}」已成功匯出並下載！`);
         }
 
-        function importThemeData(event) {
-            const file = event.target.files[0];
-            if(!file) return;
-
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                try {
-                    const importedTheme = JSON.parse(e.target.result);
-                    
-                    // 簡單驗證是否為我們的主題格式
-                    if(!importedTheme.name || importedTheme.initialTotal === undefined) {
-                        throw new Error("格式不正確");
-                    }
-                    
-                    // 賦予新 ID 避免覆蓋現有主題
-                    importedTheme.id = Date.now().toString();
-                    themes.push(importedTheme);
-                    saveThemes();
-                    showMsg(`主題「${importedTheme.name}」匯入成功！`);
-                    changeActiveTheme(importedTheme.id);
-                    
-                } catch(error) {
-                    showMsg("匯入失敗：檔案格式不正確", "error");
+        async function importThemeData(event) {
+            const file = event.target.files && event.target.files[0];
+            if (!file) return;
+            try {
+                const text = await file.text();
+                const imported = JSON.parse(text);
+                if (!imported || !imported.name || imported.initialTotal === undefined) {
+                    throw new Error('格式不正確');
                 }
-                event.target.value = ''; // 清空 input
-            };
-            reader.readAsText(file);
+                const importedTheme = normalizeImportedTheme(imported);
+                importedTheme.id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+                themes.push(importedTheme);
+                const saved = await saveThemes();
+                if (!saved) {
+                    themes = themes.filter(t => t.id !== importedTheme.id);
+                    return;
+                }
+                changeActiveTheme(importedTheme.id, true);
+                showMsg(`主題「${importedTheme.name}」匯入成功！`);
+            } catch (error) {
+                console.error(error);
+                showMsg('匯入失敗：檔案格式不正確或圖片資料損毀', 'error');
+            } finally {
+                event.target.value = '';
+            }
         }
 
-        /**
-         * ==========================================
-         * 主題管理 (設定區)
-         * ==========================================
-         */
+        /** 主題選擇器與抽卡／包包共用同一個 currentThemeId。 */
         function updateThemeDropdown() {
             themeSelector.innerHTML = '<option value="">請選擇主題...</option>';
-            themes.forEach(t => {
-                const opt = document.createElement('option');
-                opt.value = t.id; opt.textContent = t.name;
-                if(t.id === currentThemeId) opt.selected = true;
-                themeSelector.appendChild(opt);
+            themes.forEach(theme => {
+                const option = document.createElement('option');
+                option.value = theme.id;
+                option.textContent = theme.name;
+                themeSelector.appendChild(option);
             });
+            themeSelector.value = currentThemeId || '';
         }
 
-        function changeActiveTheme(id) {
-            if(!id) { currentThemeId = null; updateUIForNoTheme(); return; }
-            currentThemeId = id;
-            resetDrawState();
-            switchTab('draw');
+        function changeActiveTheme(id, navigateToDraw = false) {
+            const selected = themes.find(theme => theme.id === id);
+            if (!selected) {
+                if (currentThemeId && !document.getElementById('photo-upload-area').classList.contains('hidden')) {
+                    updateThemeDropdown();
+                    showMsg('目前這輪抽卡已確認，請先完成照片紀錄並放入包包，再切換主題。', 'warning');
+                    return;
+                }
+                currentThemeId = null;
+                try { localStorage.removeItem(ACTIVE_THEME_KEY); } catch (_) {}
+                resetDrawState();
+                updateThemeDropdown();
+                updateUIForNoTheme();
+                renderThemesList();
+                return;
+            }
+
+            const changed = currentThemeId !== selected.id;
+            if (changed && currentThemeId && !document.getElementById('photo-upload-area').classList.contains('hidden')) {
+                updateThemeDropdown();
+                showMsg('目前這輪抽卡已確認，請先完成照片紀錄並放入包包，再切換主題。', 'warning');
+                return;
+            }
+            currentThemeId = selected.id;
+            try { localStorage.setItem(ACTIVE_THEME_KEY, currentThemeId); } catch (_) {}
+            if (changed) resetDrawState();
+            updateThemeDropdown();
+            renderThemesList();
+
+            if (navigateToDraw) {
+                switchTab('draw');
+            } else if (activeTab === 'draw') {
+                updateDrawUI();
+            } else if (activeTab === 'inventory') {
+                renderInventory();
+            }
         }
 
         function showAddThemeModal() {
@@ -581,92 +951,156 @@
             tempThemeImg = null;
             document.getElementById('add-theme-modal').classList.remove('hidden');
         }
-        function closeAddThemeModal() { document.getElementById('add-theme-modal').classList.add('hidden'); }
 
-        let tempThemeImg = null;
-        async function previewThemeImage(e) {
-            if(e.target.files[0]) {
-                tempThemeImg = await compressImage(e.target.files[0]);
-                document.getElementById('preview-theme-img').src = tempThemeImg;
-                document.getElementById('preview-theme-img').classList.remove('hidden');
+        function closeAddThemeModal() {
+            document.getElementById('add-theme-modal').classList.add('hidden');
+        }
+
+        async function previewThemeImage(event) {
+            const file = event.target.files && event.target.files[0];
+            if (!file) return;
+            try {
+                tempThemeImg = await compressImage(file);
+                const preview = document.getElementById('preview-theme-img');
+                preview.src = tempThemeImg;
+                preview.classList.remove('hidden');
+            } catch (error) {
+                showMsg('主題圖片處理失敗，請改用其他圖片。', 'error');
             }
         }
 
-        function handleThemeSubmit(e) {
-            e.preventDefault();
-            const total = parseInt(document.getElementById('input-theme-total').value);
-            if(total <= 0) return showMsg("卡牌數必須大於0", "error");
+        async function handleThemeSubmit(event) {
+            event.preventDefault();
+            const total = parseInt(document.getElementById('input-theme-total').value, 10);
+            if (!Number.isInteger(total) || total <= 0) return showMsg('卡牌數必須大於 0', 'error');
 
             const newTheme = {
-                id: Date.now().toString(),
-                name: document.getElementById('input-theme-name').value,
-                assignee: document.getElementById('input-theme-assignee').value,
+                id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                name: document.getElementById('input-theme-name').value.trim(),
+                assignee: document.getElementById('input-theme-assignee').value.trim(),
                 initialTotal: total,
                 currentTotal: total,
                 image: tempThemeImg || 'https://placehold.co/100/eeeeee/888?text=Theme',
-                inventoryImages: [] 
+                inventoryImages: []
             };
             themes.push(newTheme);
-            saveThemes();
+            const saved = await saveThemes();
+            if (!saved) {
+                themes = themes.filter(t => t.id !== newTheme.id);
+                return;
+            }
             closeAddThemeModal();
-            showMsg("主題建立成功！");
-            changeActiveTheme(newTheme.id);
+            showMsg('主題建立成功！');
+            changeActiveTheme(newTheme.id, true);
         }
 
         function renderThemesList() {
             const list = document.getElementById('themes-list');
+            if (!list) return;
             list.innerHTML = '';
-            if(themes.length === 0) return list.innerHTML = '<p class="text-gray-500 font-bold text-center py-4">無主題</p>';
+            if (themes.length === 0) {
+                list.innerHTML = '<p class="text-gray-500 font-bold text-center py-4">無主題</p>';
+                return;
+            }
 
-            themes.forEach(t => {
-                const isSelected = t.id === currentThemeId;
-                list.innerHTML += `
-                    <div class="poke-card-bg p-3 flex justify-between items-center ${isSelected ? 'border-red-500 ring-2 ring-red-200' : ''}">
-                        <div class="flex items-center gap-3 w-[65%] cursor-pointer" onclick="changeActiveTheme('${t.id}')">
-                            <img src="${t.image}" class="w-12 h-12 rounded object-cover border border-gray-400">
-                            <div class="overflow-hidden">
-                                <h3 class="font-extrabold truncate">${t.name}</h3>
-                                <p class="text-xs text-gray-600 truncate">${t.assignee} | 剩餘: ${t.currentTotal}/${t.initialTotal}</p>
-                            </div>
-                        </div>
-                        <div class="flex gap-2">
-                            <button onclick="event.stopPropagation(); exportTheme('${t.id}')" class="w-8 h-8 flex items-center justify-center bg-blue-100 rounded text-blue-600 hover:bg-blue-200 border border-blue-300 transition" title="匯出備份">
-                                <i class="fa-solid fa-download"></i>
-                            </button>
-                            <button onclick="event.stopPropagation(); initDeleteTheme('${t.id}')" class="w-8 h-8 flex items-center justify-center bg-gray-200 rounded text-red-500 hover:bg-red-200 border border-gray-400 transition" title="刪除">
-                                <i class="fa-solid fa-trash-can"></i>
-                            </button>
-                        </div>
-                    </div>`;
+            themes.forEach(theme => {
+                const isSelected = theme.id === currentThemeId;
+                const card = document.createElement('div');
+                card.className = `poke-card-bg p-3 flex justify-between items-center ${isSelected ? 'border-red-500 ring-2 ring-red-200' : ''}`;
+
+                const main = document.createElement('button');
+                main.type = 'button';
+                main.className = 'flex items-center gap-3 w-[65%] text-left cursor-pointer min-w-0';
+                main.addEventListener('click', () => changeActiveTheme(theme.id, true));
+                const cover = document.createElement('img');
+                cover.src = theme.image || 'https://placehold.co/100/eeeeee/888?text=Theme';
+                cover.alt = `${theme.name} 主題圖片`;
+                cover.className = 'w-12 h-12 rounded object-cover border border-gray-400 flex-shrink-0';
+                const info = document.createElement('div');
+                info.className = 'overflow-hidden';
+                const title = document.createElement('h3');
+                title.className = 'font-extrabold truncate';
+                title.textContent = theme.name;
+                const sub = document.createElement('p');
+                sub.className = 'text-xs text-gray-600 truncate';
+                sub.textContent = `${theme.assignee} | 剩餘: ${theme.currentTotal}/${theme.initialTotal}`;
+                info.append(title, sub);
+                main.append(cover, info);
+
+                const actions = document.createElement('div');
+                actions.className = 'flex gap-2 flex-shrink-0';
+                const exportButton = document.createElement('button');
+                exportButton.type = 'button';
+                exportButton.className = 'w-8 h-8 flex items-center justify-center bg-blue-100 rounded text-blue-600 border border-blue-300 transition';
+                exportButton.title = '匯出備份';
+                exportButton.innerHTML = '<i class="fa-solid fa-download"></i>';
+                exportButton.addEventListener('click', () => exportTheme(theme.id));
+                const deleteButton = document.createElement('button');
+                deleteButton.type = 'button';
+                deleteButton.className = 'w-8 h-8 flex items-center justify-center bg-gray-200 rounded text-red-500 border border-gray-400 transition';
+                deleteButton.title = '刪除';
+                deleteButton.innerHTML = '<i class="fa-solid fa-trash-can"></i>';
+                deleteButton.addEventListener('click', () => initDeleteTheme(theme.id));
+                actions.append(exportButton, deleteButton);
+                card.append(main, actions);
+                list.appendChild(card);
             });
         }
 
         let themeToDelete = null;
+
         function initDeleteTheme(id) {
             themeToDelete = id;
-            document.getElementById('delete-target-name').textContent = themes.find(t=>t.id===id).name;
+            const theme = themes.find(t => t.id === id);
+            if (!theme) return;
+            document.getElementById('delete-target-name').textContent = theme.name;
             document.getElementById('delete-confirm-input').value = '';
             document.getElementById('delete-modal').classList.remove('hidden');
         }
-        function closeDeleteModal() { document.getElementById('delete-modal').classList.add('hidden'); themeToDelete = null;}
-        function confirmDeleteTheme() {
-            if(document.getElementById('delete-confirm-input').value !== 'DELETE') return showMsg("請輸入大寫 DELETE", "error");
-            themes = themes.filter(t => t.id !== themeToDelete);
-            if(currentThemeId === themeToDelete) {
-                currentThemeId = null;
-                updateThemeDropdown();
-                updateUIForNoTheme();
-            }
-            saveThemes();
-            closeDeleteModal();
-            showMsg("主題已刪除");
+
+        function closeDeleteModal() {
+            document.getElementById('delete-modal').classList.add('hidden');
+            themeToDelete = null;
         }
 
-        /**
-         * ==========================================
-         * 抽卡核心邏輯 (Draw)
-         * ==========================================
-         */
+        async function confirmDeleteTheme() {
+            if (document.getElementById('delete-confirm-input').value !== 'DELETE') {
+                return showMsg('請輸入大寫 DELETE', 'error');
+            }
+            const deletingId = themeToDelete;
+            if (deletingId === currentThemeId && !document.getElementById('photo-upload-area').classList.contains('hidden')) {
+                showMsg('目前這輪抽卡已確認，請先完成照片紀錄後再刪除主題。', 'warning');
+                return;
+            }
+            const oldThemes = themes;
+            themes = themes.filter(theme => theme.id !== deletingId);
+            if (currentThemeId === deletingId) {
+                currentThemeId = themes[0] ? themes[0].id : null;
+                resetDrawState();
+                if (currentThemeId) {
+                    try { localStorage.setItem(ACTIVE_THEME_KEY, currentThemeId); } catch (_) {}
+                } else {
+                    try { localStorage.removeItem(ACTIVE_THEME_KEY); } catch (_) {}
+                }
+            }
+            const saved = await saveThemes();
+            if (!saved) {
+                themes = oldThemes;
+                return;
+            }
+            closeDeleteModal();
+            updateThemeDropdown();
+            updateUIForNoThemeIfNeeded();
+            if (activeTab === 'draw') updateDrawUI();
+            if (activeTab === 'inventory') renderInventory();
+            showMsg('主題已刪除');
+        }
+
+        function updateUIForNoThemeIfNeeded() {
+            if (!currentThemeId) updateUIForNoTheme();
+        }
+
+        /** 抽卡畫面與包包都依 currentThemeId 更新。 */
         function updateUIForNoTheme() {
             document.getElementById('no-theme-msg').classList.remove('hidden');
             document.getElementById('draw-interface').classList.add('hidden');
@@ -676,65 +1110,103 @@
 
         function adjustDrawCount(change) {
             const theme = themes.find(t => t.id === currentThemeId);
-            const max = theme.currentTotal;
-            let val = parseInt(drawSlider.value) + change;
-            if (val < 1) val = 1;
-            if (val > max) val = max;
-            drawSlider.value = val;
-            currentDrawCount = val;
-            drawCountDisplay.textContent = val;
+            if (!theme || theme.currentTotal <= 0) return;
+            let value = parseInt(drawSlider.value, 10) + change;
+            value = Math.max(1, Math.min(theme.currentTotal, value));
+            drawSlider.value = value;
+            currentDrawCount = value;
+            drawCountDisplay.textContent = value;
         }
 
         function updateDrawUI() {
-            if(!currentThemeId) return updateUIForNoTheme();
             const theme = themes.find(t => t.id === currentThemeId);
-            
+            if (!theme) return updateUIForNoTheme();
+
             document.getElementById('no-theme-msg').classList.add('hidden');
             document.getElementById('draw-interface').classList.remove('hidden');
             document.getElementById('draw-theme-title').textContent = theme.name;
             document.getElementById('draw-theme-assignee').textContent = theme.assignee;
             document.getElementById('draw-theme-remain').textContent = theme.currentTotal;
 
-            // ★ 抽卡數量上限改為：該主題目前的剩餘卡片總數 ★
-            const maxDrawable = theme.currentTotal;
-            
-            if(maxDrawable === 0) {
-                document.getElementById('draw-controls').innerHTML = '<h3 class="text-xl font-bold mt-10 text-red-500 bg-red-100 p-4 border-2 border-red-500 rounded-lg shadow-md text-center">所有卡牌已全數抽完！<br><span class="text-sm text-gray-700 mt-2 block">請至包包查看您的戰利品</span></h3>';
-            } else {
-                drawSlider.max = maxDrawable;
+            const noCards = Number(theme.currentTotal) <= 0;
+            document.getElementById('draw-control-settings').classList.toggle('hidden', noCards);
+            document.getElementById('draw-empty-msg').classList.toggle('hidden', !noCards);
+            if (!noCards) {
+                drawSlider.max = theme.currentTotal;
                 drawSlider.value = 1;
                 currentDrawCount = 1;
-                drawCountDisplay.textContent = 1;
-                document.getElementById('draw-slider-max').textContent = maxDrawable;
+                drawCountDisplay.textContent = '1';
+                document.getElementById('draw-slider-max').textContent = theme.currentTotal;
             }
         }
 
         function resetDrawState() {
             currentRedraws = 0;
             isForceConfirm = false;
+            currentDrawCount = 1;
+            currentDrawnNumbers = [];
+            pendingUploads = {};
+            drawSessionThemeId = null;
+            drawConfirmed = false;
+            pendingImagesAppended = 0;
+            if (drawAnimationTimer) clearTimeout(drawAnimationTimer);
+            if (revealTimer) clearInterval(revealTimer);
+            drawAnimationTimer = null;
+            revealTimer = null;
+
             document.getElementById('draw-controls').classList.remove('hidden');
             document.getElementById('draw-animation-area').classList.add('hidden');
             document.getElementById('draw-result-area').classList.add('hidden');
             document.getElementById('photo-upload-area').classList.add('hidden');
+            document.getElementById('draw-actions').classList.add('hidden', 'opacity-0');
+            document.getElementById('redraw-warning').classList.add('hidden');
+            document.getElementById('redraw-count').textContent = String(maxRedraws);
+            const redrawButton = document.getElementById('btn-redraw');
+            redrawButton.classList.remove('poke-btn-disabled', 'bg-orange-500');
+            if (!redrawButton.classList.contains('poke-btn-yellow')) redrawButton.classList.add('poke-btn-yellow');
+            redrawButton.style.color = '';
+            document.getElementById('result-cards-container').innerHTML = '';
+            document.getElementById('upload-slots-container').innerHTML = '';
         }
 
         function startDraw() {
             const theme = themes.find(t => t.id === currentThemeId);
-            if(currentDrawCount > theme.currentTotal) return showMsg("超過剩餘數量", "error");
+            if (!theme) return showMsg('請先選擇主題', 'warning');
+            if (theme.currentTotal <= 0) return showMsg('此主題已經沒有剩餘卡牌', 'warning');
+            if (currentDrawCount > theme.currentTotal) return showMsg('抽卡數量超過剩餘數量', 'error');
+
+            // Only initialize counters for a new session; redraws keep this session's count.
+            const isNewSession = drawSessionThemeId !== currentThemeId || currentDrawnNumbers.length === 0 || drawConfirmed;
+            if (isNewSession) {
+                currentRedraws = 0;
+                isForceConfirm = false;
+                drawSessionThemeId = currentThemeId;
+                drawConfirmed = false;
+                pendingUploads = {};
+                pendingImagesAppended = 0;
+            }
 
             document.getElementById('draw-controls').classList.add('hidden');
             document.getElementById('draw-result-area').classList.add('hidden');
+            document.getElementById('photo-upload-area').classList.add('hidden');
             document.getElementById('draw-animation-area').classList.remove('hidden');
+            document.getElementById('redraw-warning').classList.add('hidden');
+            document.getElementById('redraw-count').textContent = String(maxRedraws);
+            const redrawButton = document.getElementById('btn-redraw');
+            redrawButton.classList.remove('poke-btn-disabled', 'bg-orange-500');
+            redrawButton.classList.add('poke-btn-yellow');
+            redrawButton.style.color = '';
 
             currentDrawnNumbers = [];
-            const available = Array.from({length: theme.currentTotal}, (_, i) => i + 1);
-            for(let i=0; i<currentDrawCount; i++) {
-                const randIdx = Math.floor(Math.random() * available.length);
-                currentDrawnNumbers.push(available[randIdx]);
-                available.splice(randIdx, 1);
+            const available = Array.from({ length: theme.currentTotal }, (_, index) => index + 1);
+            for (let i = 0; i < currentDrawCount; i++) {
+                const randomIndex = Math.floor(Math.random() * available.length);
+                currentDrawnNumbers.push(available[randomIndex]);
+                available.splice(randomIndex, 1);
             }
 
-            setTimeout(() => {
+            drawAnimationTimer = setTimeout(() => {
+                if (drawSessionThemeId !== currentThemeId) return;
                 document.getElementById('draw-animation-area').classList.add('hidden');
                 revealCardsSequence();
             }, 3000);
@@ -744,182 +1216,216 @@
             const resultArea = document.getElementById('draw-result-area');
             const container = document.getElementById('result-cards-container');
             const actions = document.getElementById('draw-actions');
-            
             resultArea.classList.remove('hidden');
             actions.classList.add('hidden', 'opacity-0');
             container.innerHTML = '';
-            
-            let tempElements = [];
 
-            currentDrawnNumbers.forEach(num => {
+            const elements = currentDrawnNumbers.map(number => {
                 const card = document.createElement('div');
-                card.className = "w-16 h-24 bg-white border-4 border-gray-900 rounded flex items-center justify-center shadow-md font-pixel text-xl opacity-0 hidden";
-                card.innerHTML = `<span class="text-gray-800 drop-shadow">${num}</span>`;
+                card.className = 'w-16 h-24 bg-white border-4 border-gray-900 rounded flex items-center justify-center shadow-md font-pixel text-xl opacity-0 hidden';
+                const span = document.createElement('span');
+                span.className = 'text-gray-800 drop-shadow';
+                span.textContent = number;
+                card.appendChild(span);
                 container.appendChild(card);
-                tempElements.push({el: card, num: num});
+                return card;
             });
 
-            let currentIdx = 0;
-            const revealInterval = setInterval(() => {
-                if(currentIdx < tempElements.length) {
-                    tempElements[currentIdx].el.classList.remove('hidden');
-                    tempElements[currentIdx].el.classList.add('card-reveal');
-                    if(navigator.vibrate) navigator.vibrate(50);
-                    currentIdx++;
+            let index = 0;
+            if (revealTimer) clearInterval(revealTimer);
+            revealTimer = setInterval(() => {
+                if (drawSessionThemeId !== currentThemeId) {
+                    clearInterval(revealTimer);
+                    revealTimer = null;
+                    return;
+                }
+                if (index < elements.length) {
+                    elements[index].classList.remove('hidden');
+                    elements[index].classList.add('card-reveal');
+                    if (navigator.vibrate) navigator.vibrate(50);
+                    index++;
                 } else {
-                    clearInterval(revealInterval);
+                    clearInterval(revealTimer);
+                    revealTimer = null;
                     setTimeout(() => displaySortedCards(container), 800);
                 }
             }, 600);
         }
 
         function displaySortedCards(container) {
-            const sorted = [...currentDrawnNumbers].sort((a,b) => a - b);
+            if (drawSessionThemeId !== currentThemeId) return;
+            const sorted = [...currentDrawnNumbers].sort((a, b) => a - b);
             container.innerHTML = '';
-            sorted.forEach(num => {
-                container.innerHTML += `<div class="w-16 h-24 bg-gradient-to-br from-yellow-100 to-yellow-300 border-4 border-gray-900 rounded flex items-center justify-center shadow-lg font-pixel text-xl transform transition hover:scale-110">
-                    <span class="text-blue-900 drop-shadow">${num}</span>
-                </div>`;
+            sorted.forEach(number => {
+                const card = document.createElement('div');
+                card.className = 'w-16 h-24 bg-gradient-to-br from-yellow-100 to-yellow-300 border-4 border-gray-900 rounded flex items-center justify-center shadow-lg font-pixel text-xl transform transition hover:scale-110';
+                const span = document.createElement('span');
+                span.className = 'text-blue-900 drop-shadow';
+                span.textContent = number;
+                card.appendChild(span);
+                container.appendChild(card);
             });
 
             const actions = document.getElementById('draw-actions');
-            const btnRedraw = document.getElementById('btn-redraw');
+            const redrawButton = document.getElementById('btn-redraw');
             actions.classList.remove('hidden');
             setTimeout(() => actions.classList.remove('opacity-0'), 50);
 
-            if(isForceConfirm) {
-                btnRedraw.classList.add('poke-btn-disabled');
-                setTimeout(() => confirmDraw(), 1500); 
+            if (isForceConfirm) {
+                redrawButton.classList.add('poke-btn-disabled');
+                setTimeout(() => {
+                    if (drawSessionThemeId === currentThemeId && !drawConfirmed) confirmDraw();
+                }, 1500);
             } else {
-                document.getElementById('redraw-count').textContent = maxRedraws - currentRedraws;
-                if(currentRedraws >= maxRedraws - 1) {
+                document.getElementById('redraw-count').textContent = String(maxRedraws - currentRedraws);
+                if (currentRedraws >= maxRedraws - 1) {
                     document.getElementById('redraw-warning').classList.remove('hidden');
-                    btnRedraw.classList.replace('poke-btn-yellow', 'bg-orange-500');
-                    btnRedraw.style.color = "white";
+                    redrawButton.classList.remove('poke-btn-yellow');
+                    redrawButton.classList.add('bg-orange-500');
+                    redrawButton.style.color = 'white';
                 } else {
                     document.getElementById('redraw-warning').classList.add('hidden');
-                    btnRedraw.classList.replace('bg-orange-500', 'poke-btn-yellow');
-                    btnRedraw.style.color = "";
+                    redrawButton.classList.remove('bg-orange-500', 'poke-btn-disabled');
+                    redrawButton.classList.add('poke-btn-yellow');
+                    redrawButton.style.color = '';
                 }
             }
         }
 
         function handleRedraw() {
-            if(currentRedraws < maxRedraws) {
+            if (drawSessionThemeId !== currentThemeId || drawConfirmed || isForceConfirm) return;
+            if (currentRedraws < maxRedraws) {
                 currentRedraws++;
-                if(currentRedraws === maxRedraws) isForceConfirm = true; 
+                if (currentRedraws >= maxRedraws) isForceConfirm = true;
                 document.getElementById('draw-result-area').classList.add('hidden');
                 document.getElementById('draw-controls').classList.remove('hidden');
+                document.getElementById('redraw-count').textContent = String(maxRedraws - currentRedraws);
             }
         }
 
-        /**
-         * ==========================================
-         * 確認與拍照紀錄
-         * ==========================================
-         */
-        function confirmDraw() {
+        /** 確認抽卡並進入拍照紀錄。 */
+        async function confirmDraw() {
+            if (drawSessionThemeId !== currentThemeId || drawConfirmed) return;
             const theme = themes.find(t => t.id === currentThemeId);
-            
-            theme.currentTotal -= currentDrawnNumbers.length;
-            
+            if (!theme) return;
+            if (!currentDrawnNumbers.length) return;
+
+            drawConfirmed = true;
+            theme.currentTotal = Math.max(0, theme.currentTotal - currentDrawnNumbers.length);
             document.getElementById('draw-result-area').classList.add('hidden');
+            document.getElementById('draw-controls').classList.add('hidden');
             const uploadArea = document.getElementById('photo-upload-area');
             uploadArea.classList.remove('hidden');
             document.getElementById('upload-count-display').textContent = currentDrawnNumbers.length;
-            
+
             const slots = document.getElementById('upload-slots-container');
             slots.innerHTML = '';
             pendingUploads = {};
+            pendingImagesAppended = 0;
 
-            currentDrawnNumbers.forEach((_, idx) => {
-                slots.innerHTML += `
-                <div class="poke-card-bg p-3 flex gap-3 items-center bg-gray-50">
-                    <div class="w-10 h-10 bg-yellow-400 border-2 border-gray-800 font-pixel rounded-full flex items-center justify-center text-sm font-bold shadow">${idx + 1}</div>
+            currentDrawnNumbers.forEach((_, index) => {
+                const slot = document.createElement('div');
+                slot.className = 'poke-card-bg p-3 flex gap-3 items-center bg-gray-50';
+                slot.innerHTML = `
+                    <div class="w-10 h-10 bg-yellow-400 border-2 border-gray-800 font-pixel rounded-full flex items-center justify-center text-sm font-bold shadow">${index + 1}</div>
                     <div class="flex-1">
-                        <input type="file" id="upload-${idx}" accept="image/*" capture="environment" class="hidden" onchange="handlePhotoUpload(event, ${idx})">
-                        <button onclick="document.getElementById('upload-${idx}').click()" class="w-full bg-white border-2 border-gray-800 font-bold py-2 rounded shadow-sm hover:bg-gray-100 flex items-center justify-center gap-2">
+                        <input type="file" id="upload-${index}" accept="image/*" capture="environment" class="hidden" onchange="handlePhotoUpload(event, ${index})">
+                        <button type="button" onclick="document.getElementById('upload-${index}').click()" class="w-full bg-white border-2 border-gray-800 font-bold py-2 rounded shadow-sm hover:bg-gray-100 flex items-center justify-center gap-2">
                             <i class="fa-solid fa-camera"></i> 拍照/上傳
                         </button>
                     </div>
                     <div class="w-16 h-16 border-2 border-dashed border-gray-400 rounded flex items-center justify-center bg-white overflow-hidden">
-                        <img id="preview-${idx}" class="w-full h-full object-cover hidden">
-                        <i id="icon-${idx}" class="fa-solid fa-image text-gray-300"></i>
-                    </div>
-                </div>`;
+                        <img id="preview-${index}" class="w-full h-full object-cover hidden" alt="照片預覽">
+                        <i id="icon-${index}" class="fa-solid fa-image text-gray-300"></i>
+                    </div>`;
+                slots.appendChild(slot);
             });
-            saveThemes(); 
+            await saveThemes();
             updateDrawUI();
         }
 
-        async function handlePhotoUpload(e, idx) {
-            if(e.target.files[0]) {
-                try {
-                    const compressed = await compressImage(e.target.files[0]);
-                    pendingUploads[idx] = compressed;
-                    document.getElementById(`preview-${idx}`).src = compressed;
-                    document.getElementById(`preview-${idx}`).classList.remove('hidden');
-                    document.getElementById(`icon-${idx}`).classList.add('hidden');
-                } catch(err) {
-                    showMsg("圖片處理失敗", "error");
-                }
+        async function handlePhotoUpload(event, index) {
+            const file = event.target.files && event.target.files[0];
+            if (!file) return;
+            try {
+                const compressed = await compressImage(file);
+                pendingUploads[index] = compressed;
+                const preview = document.getElementById(`preview-${index}`);
+                preview.src = compressed;
+                preview.classList.remove('hidden');
+                document.getElementById(`icon-${index}`).classList.add('hidden');
+            } catch (error) {
+                console.error(error);
+                showMsg('圖片處理失敗，請改用其他圖片。', 'error');
             }
         }
 
-        function finishUploads() {
+        async function finishUploads() {
             const theme = themes.find(t => t.id === currentThemeId);
+            if (!theme || drawSessionThemeId !== currentThemeId) return;
             const total = currentDrawnNumbers.length;
-            
-            if(Object.keys(pendingUploads).length < total) {
-                if(!confirm(`還有未上傳圖片的卡牌，將以預設圖代替，確定完成嗎？`)) return;
+            if (Object.keys(pendingUploads).length < total) {
+                if (!confirm('還有未上傳圖片的卡牌，將以預設圖代替，確定完成嗎？')) return;
             }
 
-            for (let i = 0; i < total; i++) {
-                theme.inventoryImages.push(pendingUploads[i] || 'https://placehold.co/300x400/dddddd/999?text=No+Photo');
+            // 儲存失敗時保留畫面與已加入的圖片，避免再次點擊時重複加入。
+            if (pendingImagesAppended === 0) {
+                for (let index = 0; index < total; index++) {
+                    theme.inventoryImages.push(pendingUploads[index] || 'https://placehold.co/300x400/dddddd/999?text=No+Photo');
+                }
+                pendingImagesAppended = total;
             }
 
-            saveThemes();
+            const saved = await saveThemes();
+            if (!saved) return;
             resetDrawState();
-            showMsg("已成功紀錄並放入包包！");
+            showMsg('已成功紀錄並放入包包！');
             switchTab('inventory');
         }
 
-        /**
-         * ==========================================
-         * 包包檢視 (Inventory)
-         * ==========================================
-         */
+        /** 包包圖片點選後以全螢幕方式顯示，支援觸控縮放。 */
         function renderInventory() {
-            if(!currentThemeId) return;
             const theme = themes.find(t => t.id === currentThemeId);
-            
+            if (!theme) {
+                document.getElementById('inv-no-theme').classList.remove('hidden');
+                document.getElementById('inv-content').classList.add('hidden');
+                return;
+            }
+
             document.getElementById('inv-no-theme').classList.add('hidden');
             document.getElementById('inv-content').classList.remove('hidden');
-            
             document.getElementById('inv-theme-name').textContent = theme.name;
             document.getElementById('inv-collected').textContent = theme.inventoryImages.length;
 
             const gallery = document.getElementById('gallery-container');
-            const emptyMsg = document.getElementById('empty-gallery-msg');
+            const emptyMessage = document.getElementById('empty-gallery-msg');
             gallery.innerHTML = '';
-
-            if(theme.inventoryImages.length === 0) {
-                emptyMsg.classList.remove('hidden');
-            } else {
-                emptyMsg.classList.add('hidden');
-                theme.inventoryImages.forEach((imgBase64, index) => {
-                    gallery.innerHTML += `
-                        <div class="aspect-[3/4] rounded border-2 border-gray-800 bg-white overflow-hidden shadow-sm relative">
-                            <div class="absolute top-0 left-0 bg-yellow-400 border-b-2 border-r-2 border-gray-800 px-1 font-pixel text-[10px] font-bold z-10 text-black">
-                                #${index + 1}
-                            </div>
-                            <img src="${imgBase64}" class="w-full h-full object-cover">
-                        </div>
-                    `;
-                });
+            if (!theme.inventoryImages.length) {
+                emptyMessage.classList.remove('hidden');
+                return;
             }
-        }
+            emptyMessage.classList.add('hidden');
 
+            theme.inventoryImages.forEach((imageSource, index) => {
+                const wrapper = document.createElement('button');
+                wrapper.type = 'button';
+                wrapper.className = 'aspect-[3/4] rounded border-2 border-gray-800 bg-white overflow-hidden shadow-sm relative text-left';
+                wrapper.setAttribute('aria-label', `放大檢視第 ${index + 1} 張卡牌照片`);
+                wrapper.dataset.imageIndex = String(index);
+
+                const number = document.createElement('span');
+                number.className = 'absolute top-0 left-0 bg-yellow-400 border-b-2 border-r-2 border-gray-800 px-1 font-pixel text-[10px] font-bold z-10 text-black';
+                number.textContent = `#${index + 1}`;
+                const image = document.createElement('img');
+                image.src = imageSource;
+                image.alt = `第 ${index + 1} 張卡牌照片，點擊放大`;
+                image.dataset.imageIndex = String(index);
+                image.className = 'gallery-photo w-full h-full object-cover';
+                image.loading = 'lazy';
+                wrapper.append(number, image);
+                gallery.appendChild(wrapper);
+            });
+        }
     </script>
 </body>
 </html>
